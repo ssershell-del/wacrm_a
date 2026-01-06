@@ -18,6 +18,7 @@ API_KEY = "AIzaSyAaQhD0HJsbZNHdWFphgjJYgLNqLCPGEjE"
 client = genai.Client(api_key=API_KEY)
 MODEL_NAME = "gemini-2.5-flash"
 DB_FOLDER = "databases"
+COOKIE_FILE = "youtube_cookies.txt" # Nom du fichier à mettre sur ton GitHub
 
 if not os.path.exists(DB_FOLDER):
     os.makedirs(DB_FOLDER)
@@ -49,7 +50,7 @@ def process_scan(niche, nb_videos, min_views):
     results = []
     count_success = 0
     
-    # --- TON PROMPT TECHNIQUE ---
+    # --- TON PROMPT TECHNIQUE (INTACT) ---
     analysis_prompt = """
     Tu es un Expert Technique en Montage Vidéo (Anime Music Video / Edit).
     Ta mission est de décortiquer cette vidéo virale pour qu'un monteur puisse la reproduire.
@@ -87,60 +88,92 @@ def process_scan(niche, nb_videos, min_views):
     }
     """
 
-    for _ in range(nb_videos * 4): # On cherche plus large pour filtrer
+    for _ in range(nb_videos * 4): 
         if count_success >= nb_videos: break
         query = random.choice(queries)
         
-        ydl_opts = {'quiet': True, 'extract_flat': True, 'ignoreerrors': True}
+        # AJOUT DES COOKIES POUR LA RECHERCHE
+        ydl_opts = {
+            'quiet': True, 
+            'extract_flat': True, 
+            'ignoreerrors': True,
+            'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None
+        }
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch5:{query}", download=False)
-            if 'entries' not in info: continue
-            
-            for entry in info['entries']:
-                if not entry or entry.get('url') in existing_urls: continue
-                url = entry.get('url')
+            try:
+                info = ydl.extract_info(f"ytsearch5:{query}", download=False)
+                if 'entries' not in info: continue
                 
-                # Téléchargement
-                video_filename = f"temp_{random.randint(1000,9999)}.mp4"
-                try:
-                    with yt_dlp.YoutubeDL({'format': 'best[ext=mp4]', 'outtmpl': video_filename, 'quiet': True}) as ydl_dl:
-                        vid_info = ydl_dl.extract_info(url, download=True)
-                        if vid_info.get('view_count', 0) < min_views:
-                            os.remove(video_filename)
-                            continue
-                        
-                        # Upload Gemini
-                        file_ref = client.files.upload(file=video_filename, config={'mime_type': 'video/mp4'})
-                        while client.files.get(name=file_ref.name).state == "PROCESSING": time.sleep(1)
-                        
-                        # Analyse IA
-                        res_ia = client.models.generate_content(
-                            model=MODEL_NAME, 
-                            contents=[file_ref, analysis_prompt],
-                            config=types.GenerateContentConfig(response_mime_type="application/json")
-                        )
-                        
-                        final_data = json.loads(res_ia.text)
-                        final_data['meta'] = {
-                            'niche': niche, 'url': url, 'title': vid_info.get('title'), 'views': vid_info.get('view_count')
-                        }
-                        
-                        # Sauvegarde JSON
-                        current_db = []
-                        if os.path.exists(db_path):
-                            with open(db_path, 'r', encoding='utf-8') as f: current_db = json.load(f)
-                        current_db.append(final_data)
-                        with open(db_path, 'w', encoding='utf-8') as f:
-                            json.dump(current_db, f, indent=4, ensure_ascii=False)
-                        
-                        results.append(final_data)
-                        existing_urls.append(url)
-                        count_success += 1
-                        os.remove(video_filename)
-                        if count_success >= nb_videos: break
-                except Exception as e:
-                    print(f"Erreur sur {url}: {e}")
-                    if os.path.exists(video_filename): os.remove(video_filename)
+                for entry in info['entries']:
+                    if not entry or entry.get('url') in existing_urls: continue
+                    url = entry.get('url')
+                    
+                    # Téléchargement
+                    video_filename = f"temp_{random.randint(1000,9999)}.mp4"
+                    
+                    # AJOUT DES COOKIES POUR LE TELECHARGEMENT
+                    dl_opts = {
+                        'format': 'best[ext=mp4]', 
+                        'outtmpl': video_filename, 
+                        'quiet': True,
+                        'cookiefile': COOKIE_FILE if os.path.exists(COOKIE_FILE) else None
+                    }
+                    
+                    try:
+                        with yt_dlp.YoutubeDL(dl_opts) as ydl_dl:
+                            vid_info = ydl_dl.extract_info(url, download=True)
+                            
+                            # Vérification virale
+                            views = vid_info.get('view_count', 0)
+                            if views < min_views:
+                                if os.path.exists(video_filename): os.remove(video_filename)
+                                continue
+                            
+                            # Upload Gemini
+                            file_ref = client.files.upload(file=video_filename, config={'mime_type': 'video/mp4'})
+                            while client.files.get(name=file_ref.name).state == "PROCESSING":
+                                time.sleep(1)
+                            
+                            # Analyse IA
+                            res_ia = client.models.generate_content(
+                                model=MODEL_NAME, 
+                                contents=[file_ref, analysis_prompt],
+                                config=types.GenerateContentConfig(response_mime_type="application/json")
+                            )
+                            
+                            final_data = json.loads(res_ia.text)
+                            final_data['meta'] = {
+                                'niche': niche, 
+                                'url': url, 
+                                'title': vid_info.get('title', 'Sans titre'), 
+                                'views': views
+                            }
+                            
+                            # Sauvegarde JSON propre
+                            current_db = []
+                            if os.path.exists(db_path):
+                                try:
+                                    with open(db_path, 'r', encoding='utf-8') as f:
+                                        current_db = json.load(f)
+                                except: current_db = []
+                            
+                            current_db.append(final_data)
+                            with open(db_path, 'w', encoding='utf-8') as f:
+                                json.dump(current_db, f, indent=4, ensure_ascii=False)
+                            
+                            results.append(final_data)
+                            existing_urls.append(url)
+                            count_success += 1
+                            
+                            if os.path.exists(video_filename): os.remove(video_filename)
+                            if count_success >= nb_videos: break
+                            
+                    except Exception as e:
+                        print(f"Erreur téléchargement/analyse: {e}")
+                        if os.path.exists(video_filename): os.remove(video_filename)
+            except Exception as e:
+                print(f"Erreur recherche YouTube: {e}")
 
     return results
 
@@ -153,13 +186,14 @@ def index():
 @app.route('/scan', methods=['POST'])
 def scan():
     niche = request.form.get('niche')
-    nb_videos = int(request.form.get('nb_videos'))
-    views_input = request.form.get('min_views').lower()
+    nb_videos = int(request.form.get('nb_videos', 1))
+    views_input = request.form.get('min_views', '1000000').lower()
     
-    # Conversion intelligente des vues (1M -> 1000000)
     if 'm' in views_input: min_views = int(float(views_input.replace('m','')) * 1000000)
     elif 'k' in views_input: min_views = int(float(views_input.replace('k','')) * 1000)
-    else: min_views = int(views_input)
+    else: 
+        try: min_views = int(views_input)
+        except: min_views = 1000000
 
     data = process_scan(niche, nb_videos, min_views)
     api_link = f"{request.host_url}api/json/{niche.lower().replace(' ', '_')}"
