@@ -8,27 +8,23 @@ from flask import Flask, render_template, request, jsonify, send_from_directory
 from google import genai
 from google.genai import types
 
-# --- ⚙️ CONFIGURATION FLASK & IA ---
-app = Flask(__name__)
+# --- ⚙️ CONFIGURATION FLASK ---
+# On définit template_folder="." pour chercher index.html à la racine
+app = Flask(__name__, template_folder=".") 
 warnings.filterwarnings("ignore")
 
-# 🔴 TA CLÉ API (Je l'ai remise ici)
+# 🔴 TA CLÉ API
 API_KEY = "AIzaSyAaQhD0HJsbZNHdWFphgjJYgLNqLCPGEjE" 
 client = genai.Client(api_key=API_KEY)
 MODEL_NAME = "gemini-2.5-flash"
 DB_FOLDER = "databases"
 
-# Création du dossier de stockage si inexistant
 if not os.path.exists(DB_FOLDER):
     os.makedirs(DB_FOLDER)
 
-# --- 🧠 FONCTION IA ---
+# --- 🧠 FONCTION IA RECHERCHE ---
 def generate_smart_queries(niche):
-    prompt = f"""
-    Tu es un expert en SEO YouTube. Donne une liste Python de 5 termes de recherche 
-    pour trouver des Shorts viraux dans la niche : "{niche}".
-    Format: ["terme 1", "terme 2"]
-    """
+    prompt = f"Tu es un expert en SEO YouTube. Donne une liste Python de 5 termes de recherche pour trouver des Shorts viraux dans la niche : '{niche}'. Format: ['terme 1', 'terme 2']"
     try:
         response = client.models.generate_content(model=MODEL_NAME, contents=prompt)
         text = response.text.strip().replace("```json", "").replace("```python", "").replace("```", "")
@@ -36,96 +32,103 @@ def generate_smart_queries(niche):
     except:
         return [f"{niche} viral shorts", f"{niche} edit"]
 
-# --- 🛠️ UTILITAIRES ---
-def get_db_path(niche):
-    clean_niche = niche.lower().replace(" ", "_").strip()
-    return os.path.join(DB_FOLDER, f"db_{clean_niche}.json")
-
-def load_existing_urls(db_path):
-    if not os.path.exists(db_path): return []
-    try:
-        with open(db_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return [item['meta']['url'] for item in data if 'meta' in item]
-    except: return []
-
-# --- 🦅 LE CHASSEUR & ANALYSTE (Core Logic) ---
+# --- 🦅 LE CHASSEUR & ANALYSTE ---
 def process_scan(niche, nb_videos, min_views):
-    db_path = get_db_path(niche)
+    db_path = os.path.join(DB_FOLDER, f"db_{niche.lower().replace(' ', '_')}.json")
     queries = generate_smart_queries(niche)
-    existing_urls = load_existing_urls(db_path)
     
+    # Historique pour éviter les doublons
+    existing_urls = []
+    if os.path.exists(db_path):
+        try:
+            with open(db_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                existing_urls = [item['meta']['url'] for item in data if 'meta' in item]
+        except: pass
+
     results = []
     count_success = 0
-    max_duration = 60
     
-    # Pour l'exemple Web, on simplifie la boucle pour éviter le timeout navigateur
-    # (Dans une version V2, on mettrait ça en tâche de fond)
+    # --- TON PROMPT TECHNIQUE ---
+    analysis_prompt = """
+    Tu es un Expert Technique en Montage Vidéo (Anime Music Video / Edit).
+    Ta mission est de décortiquer cette vidéo virale pour qu'un monteur puisse la reproduire.
     
-    for _ in range(nb_videos * 3): # On essaie 3x plus de recherches que nécessaire
+    Sois EXTRÊMEMENT PRÉCIS et DÉTAILLÉ. Ne sois pas vague.
+    
+    Retourne UNIQUEMENT un objet JSON avec la structure exacte suivante :
+
+    {
+      "1_VISUAL_HOOK": {
+        "scene_intro": "Description cinématique de la toute première seconde (personnages, actions, décor).",
+        "effet_visuel_intro": "Liste les techniques exactes (ex: Zoom in brutal, Camera Shake, Flash blanc, Vignette, Aberration chromatique).",
+        "texte_ecran": "Retranscris TOUT le texte qui apparaît à l'écran dans l'intro (sous-titres, onomatopées)."
+      },
+      "2_SYNC_FLOW": {
+        "bpm_match": "Analyse la synchro : Est-ce que les transitions tombent sur les kicks ? Est-ce que les mouvements suivent la mélodie ?",
+        "flow_type": "Décris la courbe d'intensité (ex: Intro calme -> Drop violent -> Ralenti Twixtor)."
+      },
+      "3_EFFECTS_LIST": {
+        "vfx_utilises": [
+          "Liste ici tous les effets techniques identifiés (ex: RSMB, Twixtor, Glow, S_Shake, Glitch, Masking)"
+        ],
+        "color_grading": "Analyse la colorimétrie (ex: Saturation poussée, teintes bleues, contraste fort)."
+      },
+      "4_AUDIO_DNA": {
+        "style_musique": "Genre précis (ex: Phonk, Hyperpop, Breakcore).",
+        "sfx_cle": [
+           "Liste les bruitages ajoutés (ex: Sword slash, Gun cocking, Whoosh)"
+        ]
+      },
+      "5_REPRODUCTION_GUIDE": {
+        "prompt_image_gen": "Rédige un PROMPT DÉTAILLÉ en ANGLAIS pour générer une image clé de ce style (Midjourney/Stable Diffusion).",
+        "conseil_montage": "Donne un conseil technique avancé pour cloner ce style."
+      }
+    }
+    """
+
+    for _ in range(nb_videos * 4): # On cherche plus large pour filtrer
         if count_success >= nb_videos: break
-        
         query = random.choice(queries)
-        ydl_opts = {'quiet': True, 'extract_flat': True, 'ignoreerrors': True}
         
+        ydl_opts = {'quiet': True, 'extract_flat': True, 'ignoreerrors': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"ytsearch5:{query}", download=False)
             if 'entries' not in info: continue
             
-            entries = list(info['entries'])
-            random.shuffle(entries)
-            
-            for entry in entries:
-                if not entry: continue
+            for entry in info['entries']:
+                if not entry or entry.get('url') in existing_urls: continue
                 url = entry.get('url')
-                title = entry.get('title', 'N/A')
                 
-                if url in existing_urls: continue
-                
-                # DL & VERIFY
+                # Téléchargement
                 video_filename = f"temp_{random.randint(1000,9999)}.mp4"
-                dl_opts = {'format': 'best[ext=mp4]', 'outtmpl': video_filename, 'quiet': True}
-                
                 try:
-                    with yt_dlp.YoutubeDL(dl_opts) as ydl_dl:
+                    with yt_dlp.YoutubeDL({'format': 'best[ext=mp4]', 'outtmpl': video_filename, 'quiet': True}) as ydl_dl:
                         vid_info = ydl_dl.extract_info(url, download=True)
                         if vid_info.get('view_count', 0) < min_views:
-                            if os.path.exists(video_filename): os.remove(video_filename)
+                            os.remove(video_filename)
                             continue
                         
-                        # UPLOAD GEMINI
+                        # Upload Gemini
                         file_ref = client.files.upload(file=video_filename, config={'mime_type': 'video/mp4'})
                         while client.files.get(name=file_ref.name).state == "PROCESSING": time.sleep(1)
                         
-                        # ANALYSE
-                        analysis_prompt = """
-                        Analyse cette vidéo frame par frame.
-                        Format JSON OBLIGATOIRE :
-                        {
-                          "1_VISUAL_HOOK": { "scene_intro": "...", "techniques": "..." },
-                          "2_RYTHME": { "bpm": "...", "cuts": "..." },
-                          "3_VFX": { "list": "..." },
-                          "4_AUDIO": { "sfx": "..." },
-                          "5_PROMPT": { "midjourney": "...", "conseil": "..." }
-                        }
-                        """
+                        # Analyse IA
                         res_ia = client.models.generate_content(
                             model=MODEL_NAME, 
                             contents=[file_ref, analysis_prompt],
                             config=types.GenerateContentConfig(response_mime_type="application/json")
                         )
-                        final_data = json.loads(res_ia.text)
                         
-                        # MÉTADONNÉES
+                        final_data = json.loads(res_ia.text)
                         final_data['meta'] = {
-                            'niche': niche, 'url': url, 'title': title, 'views': vid_info.get('view_count')
+                            'niche': niche, 'url': url, 'title': vid_info.get('title'), 'views': vid_info.get('view_count')
                         }
                         
-                        # SAVE
+                        # Sauvegarde JSON
                         current_db = []
                         if os.path.exists(db_path):
                             with open(db_path, 'r', encoding='utf-8') as f: current_db = json.load(f)
-                        
                         current_db.append(final_data)
                         with open(db_path, 'w', encoding='utf-8') as f:
                             json.dump(current_db, f, indent=4, ensure_ascii=False)
@@ -133,16 +136,15 @@ def process_scan(niche, nb_videos, min_views):
                         results.append(final_data)
                         existing_urls.append(url)
                         count_success += 1
-                        
-                        if os.path.exists(video_filename): os.remove(video_filename)
-                        break # Sortir de la boucle entries pour changer de query
+                        os.remove(video_filename)
+                        if count_success >= nb_videos: break
                 except Exception as e:
-                    print(f"Erreur process: {e}")
+                    print(f"Erreur sur {url}: {e}")
                     if os.path.exists(video_filename): os.remove(video_filename)
 
     return results
 
-# --- 🌐 ROUTES WEB ---
+# --- 🌐 ROUTES ---
 
 @app.route('/')
 def index():
@@ -152,31 +154,21 @@ def index():
 def scan():
     niche = request.form.get('niche')
     nb_videos = int(request.form.get('nb_videos'))
-    min_views = int(request.form.get('min_views'))
+    views_input = request.form.get('min_views').lower()
     
-    # Lancement du process
+    # Conversion intelligente des vues (1M -> 1000000)
+    if 'm' in views_input: min_views = int(float(views_input.replace('m','')) * 1000000)
+    elif 'k' in views_input: min_views = int(float(views_input.replace('k','')) * 1000)
+    else: min_views = int(views_input)
+
     data = process_scan(niche, nb_videos, min_views)
-    
-    # Création du lien API
-    clean_niche = niche.lower().replace(" ", "_").strip()
-    api_link = f"{request.host_url}api/json/{clean_niche}"
-    
+    api_link = f"{request.host_url}api/json/{niche.lower().replace(' ', '_')}"
     return jsonify({"status": "success", "data": data, "api_link": api_link})
 
-# --- 🔌 ROUTE API SPECIALE (Ce que tu as demandé) ---
 @app.route('/api/json/<niche_id>', methods=['GET'])
 def get_json_api(niche_id):
-    """
-    Cette URL permet à n'importe quel autre logiciel de récupérer
-    le JSON brut de la niche analysée.
-    Exemple: [http://ton-site.com/api/json/anime](http://ton-site.com/api/json/anime)
-    """
     filename = f"db_{niche_id}.json"
-    try:
-        return send_from_directory(DB_FOLDER, filename, as_attachment=False)
-    except FileNotFoundError:
-        return jsonify({"error": "Base de données introuvable pour cette niche."}), 404
+    return send_from_directory(DB_FOLDER, filename)
 
 if __name__ == '__main__':
-    # Mode debug activé pour voir les erreurs
     app.run(debug=True, host='0.0.0.0', port=5000)
