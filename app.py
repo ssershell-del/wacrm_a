@@ -13,12 +13,12 @@ from google.genai import types
 app = Flask(__name__, template_folder=".") 
 warnings.filterwarnings("ignore")
 
-# 🔴 TA CLÉ API
+# 🔴 CONFIGURATION IA & DOSSIERS
 API_KEY = "AIzaSyAaQhD0HJsbZNHdWFphgjJYgLNqLCPGEjE" 
 client = genai.Client(api_key=API_KEY)
 MODEL_NAME = "gemini-2.5-flash"
 DB_FOLDER = "databases"
-COOKIE_FILE = "youtube_cookies.txt" # Nom du fichier à mettre sur ton GitHub
+COOKIE_FILE = "youtube_cookies.txt" 
 
 if not os.path.exists(DB_FOLDER):
     os.makedirs(DB_FOLDER)
@@ -38,7 +38,12 @@ def process_scan(niche, nb_videos, min_views):
     db_path = os.path.join(DB_FOLDER, f"db_{niche.lower().replace(' ', '_')}.json")
     queries = generate_smart_queries(niche)
     
-    # Historique pour éviter les doublons
+    # Logs pour vérifier les cookies sur Render
+    if os.path.exists(COOKIE_FILE):
+        print(f"✅ COOKIES DETECTÉS : Utilisation de {COOKIE_FILE}")
+    else:
+        print(f"⚠️ ATTENTION : {COOKIE_FILE} introuvable à la racine.")
+
     existing_urls = []
     if os.path.exists(db_path):
         try:
@@ -50,7 +55,7 @@ def process_scan(niche, nb_videos, min_views):
     results = []
     count_success = 0
     
-    # --- TON PROMPT TECHNIQUE (INTACT) ---
+    # --- TON PROMPT TECHNIQUE (STRICTEMENT INTACT) ---
     analysis_prompt = """
     Tu es un Expert Technique en Montage Vidéo (Anime Music Video / Edit).
     Ta mission est de décortiquer cette vidéo virale pour qu'un monteur puisse la reproduire.
@@ -92,7 +97,6 @@ def process_scan(niche, nb_videos, min_views):
         if count_success >= nb_videos: break
         query = random.choice(queries)
         
-        # AJOUT DES COOKIES POUR LA RECHERCHE
         ydl_opts = {
             'quiet': True, 
             'extract_flat': True, 
@@ -103,16 +107,13 @@ def process_scan(niche, nb_videos, min_views):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 info = ydl.extract_info(f"ytsearch5:{query}", download=False)
-                if 'entries' not in info: continue
+                if not info or 'entries' not in info: continue
                 
                 for entry in info['entries']:
                     if not entry or entry.get('url') in existing_urls: continue
                     url = entry.get('url')
                     
-                    # Téléchargement
                     video_filename = f"temp_{random.randint(1000,9999)}.mp4"
-                    
-                    # AJOUT DES COOKIES POUR LE TELECHARGEMENT
                     dl_opts = {
                         'format': 'best[ext=mp4]', 
                         'outtmpl': video_filename, 
@@ -123,9 +124,8 @@ def process_scan(niche, nb_videos, min_views):
                     try:
                         with yt_dlp.YoutubeDL(dl_opts) as ydl_dl:
                             vid_info = ydl_dl.extract_info(url, download=True)
-                            
-                            # Vérification virale
                             views = vid_info.get('view_count', 0)
+                            
                             if views < min_views:
                                 if os.path.exists(video_filename): os.remove(video_filename)
                                 continue
@@ -144,13 +144,10 @@ def process_scan(niche, nb_videos, min_views):
                             
                             final_data = json.loads(res_ia.text)
                             final_data['meta'] = {
-                                'niche': niche, 
-                                'url': url, 
-                                'title': vid_info.get('title', 'Sans titre'), 
-                                'views': views
+                                'niche': niche, 'url': url, 'title': vid_info.get('title', 'N/A'), 'views': views
                             }
                             
-                            # Sauvegarde JSON propre
+                            # Sauvegarde JSON
                             current_db = []
                             if os.path.exists(db_path):
                                 try:
@@ -165,15 +162,14 @@ def process_scan(niche, nb_videos, min_views):
                             results.append(final_data)
                             existing_urls.append(url)
                             count_success += 1
-                            
                             if os.path.exists(video_filename): os.remove(video_filename)
                             if count_success >= nb_videos: break
                             
                     except Exception as e:
-                        print(f"Erreur téléchargement/analyse: {e}")
+                        print(f"Erreur téléchargement: {e}")
                         if os.path.exists(video_filename): os.remove(video_filename)
             except Exception as e:
-                print(f"Erreur recherche YouTube: {e}")
+                print(f"Erreur YouTube Search: {e}")
 
     return results
 
